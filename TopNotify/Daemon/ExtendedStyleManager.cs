@@ -41,6 +41,10 @@ namespace SamsidParty_TopNotify.Daemon
         public IntPtr BaseStyle = IntPtr.Zero;
         public IntPtr LastHandle = IntPtr.Zero;
         public IntPtr LastStyle = IntPtr.Zero;
+        public IntPtr LastStyleHandle = IntPtr.Zero;
+        public IntPtr LastAlphaHandle = IntPtr.Zero;
+        public byte LastAlpha = 0;
+        public bool HasAppliedAlpha = false;
 
         public ExtendedStyleManager(IntPtr baseStyle)
         {
@@ -66,14 +70,26 @@ namespace SamsidParty_TopNotify.Daemon
                 styleToApply = BaseStyle;
             }
 
-            if (styleToApply != LastStyle)
+            // Only Touch The Window When The Style Changed, Or When We Got A New Window
+            if (styleToApply != LastStyle || hwnd != LastStyleHandle)
             {
                 SetWindowLongPtr(hwnd, GWL_EXSTYLE, styleToApply);
                 LastStyle = styleToApply;
+                LastStyleHandle = hwnd;
             }
 
             //Set Window Opacity
-            SetLayeredWindowAttributes(hwnd, 0, (byte)(42.5 * (6 - InterceptorManager.Instance.CurrentSettings.Opacity)), LWA_ALPHA);
+            // Only Touch The Window When The Opacity Changed, Or When We Got A New Window
+            // (This Used To Be Called On Every Tick, Which Makes The Compositor Redraw The Window)
+            var alpha = (byte)(42.5 * (6 - InterceptorManager.Instance.CurrentSettings.Opacity));
+
+            if (!HasAppliedAlpha || alpha != LastAlpha || hwnd != LastAlphaHandle)
+            {
+                SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+                LastAlpha = alpha;
+                LastAlphaHandle = hwnd;
+                HasAppliedAlpha = true;
+            }
         }
 
         //Like Update, But Can Be Used Without An ExtendedStyleManager Object

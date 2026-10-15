@@ -36,6 +36,12 @@ namespace TopNotify.Daemon
         [DllImport("user32.dll")]
         public static extern bool GetWindowRect(IntPtr hwnd, ref Rectangle rectangle);
 
+        [DllImport("user32.dll")]
+        public static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         public static extern IntPtr SendMessage(IntPtr hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam);
 
@@ -71,6 +77,18 @@ namespace TopNotify.Daemon
         public int RealPreferredDisplayWidth;
         public int RealPreferredDisplayHeight;
         public float ScaleFactor;
+
+        /// <summary>Tolerance (in pixels) used when checking whether the notification window is already in place</summary>
+        const int PositionTolerance = 2;
+
+        /// <summary>
+        /// Only Poll Fast While A Notification Window Is Actually Visible,
+        /// So The Main Loop Can Back Off While Nothing Is Happening
+        /// </summary>
+        public override bool NeedsFrequentUpdate
+        {
+            get { return hwnd != IntPtr.Zero && IsWindow(hwnd) && IsWindowVisible(hwnd); }
+        }
 
         public override void Start()
         {
@@ -113,6 +131,13 @@ namespace TopNotify.Daemon
 
             try
             {
+                // Forget The Handle If The Notification Window Is Gone,
+                // Otherwise Win32 Would Be Called On A Dead Handle On Every Single Tick
+                if (hwnd != IntPtr.Zero && !IsWindow(hwnd))
+                {
+                    hwnd = IntPtr.Zero;
+                }
+
                 var foundHwnd = FindWindow("Windows.UI.Core.CoreWindow", Language.NotificationName);
 
                 if (Settings.EnableDebugForceFallbackMode)
@@ -148,6 +173,9 @@ namespace TopNotify.Daemon
                 {
                     Program.Logger.Information($"Found notification window {foundHwnd}");
                     hwnd = foundHwnd;
+
+                    // Apply The Position/Opacity Right Away Instead Of Waiting For The Next Tick
+                    InterceptorManager.Instance?.RequestImmediateUpdate();
                 }
                 else if (foundHwnd == IntPtr.Zero)
                 {
@@ -176,17 +204,28 @@ namespace TopNotify.Daemon
         {
             base.Update();
 
+            // Nothing To Do Until Reflow() Finds The Notification Window
+            if (hwnd == IntPtr.Zero) { return; }
+
+            // The Notification Window Can Disappear At Any Moment,
+            // Don't Keep Calling Win32 On A Dead Handle
+            if (!IsWindow(hwnd))
+            {
+                Program.Logger.Information($"Notification window {hwnd} no longer exists");
+                hwnd = IntPtr.Zero;
+                return;
+            }
+
             // Update extended styles
             ExStyleManager.Update(hwnd);
 
             // Find The Bounds Of The Notification Window
             Rectangle NotifyRect = new Rectangle();
-            GetWindowRect(hwnd, ref NotifyRect);
+            if (!GetWindowRect(hwnd, ref NotifyRect)) { return; }
 
             // Find The Bounds Of The Preferred Monitor
-            var hMonitor = ResolutionFinder.GetPreferredDisplay();
-            MonitorInfo currentMonitorInfo = new MonitorInfo();
-            ResolutionFinder.GetMonitorInfo(hMonitor, currentMonitorInfo);
+            // (Cached, So This Doesn't Enumerate Displays On Every Tick)
+            var currentMonitorInfo = ResolutionFinder.GetPreferredDisplayInfo();
             var originX = currentMonitorInfo.Monitor.Left;
             var originY = currentMonitorInfo.Monitor.Top;
 
@@ -195,22 +234,29 @@ namespace TopNotify.Daemon
             var unscaledWidth = (int)((NotifyRect.Width - NotifyRect.X));
             var unscaledHeight = (int)((NotifyRect.Height - NotifyRect.Y));
 
+            int targetX;
+            int targetY;
+
             if (Settings.Location == NotifyLocation.TopLeft)
             {
                 //Easy Peesy
-                SetWindowPos(hwnd, 0, originX + 0, originY + 0, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+                targetX = originX + 0;
+                targetY = originY + 0;
             }
             else if (Settings.Location == NotifyLocation.TopRight)
             {
-                SetWindowPos(hwnd, 0, originX + (RealPreferredDisplayWidth - unscaledWidth), 0, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+                targetX = originX + (RealPreferredDisplayWidth - unscaledWidth);
+                targetY = 0;
             }
             else if (Settings.Location == NotifyLocation.BottomLeft)
             {
-                SetWindowPos(hwnd, 0, originX + 0, originY + (RealPreferredDisplayHeight - unscaledHeight - (int)Math.Round(50f)), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+                targetX = originX + 0;
+                targetY = originY + (RealPreferredDisplayHeight - unscaledHeight - (int)Math.Round(50f));
             }
             else if (Settings.Location == NotifyLocation.BottomRight) // Default In Windows, But Here For Completeness Sake
             {
-                SetWindowPos(hwnd, 0, originX + (RealPreferredDisplayWidth - unscaledWidth), originY + (RealPreferredDisplayHeight - unscaledHeight - (int)Math.Round(50f)), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+                targetX = originX + (RealPreferredDisplayWidth - unscaledWidth);
+                targetY = originY + (RealPreferredDisplayHeight - unscaledHeight - (int)Math.Round(50f));
             }
             else // Custom Position
             {
@@ -224,7 +270,19 @@ namespace TopNotify.Daemon
                     yPosition = Math.Clamp(yPosition, 0, RealPreferredDisplayHeight - unscaledHeight);
                 }
 
-                SetWindowPos(hwnd, 0, originX + xPosition, originY + yPosition, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+                targetX = originX + xPosition;
+                targetY = originY + yPosition;
+            }
+
+            // Only Move The Window When It Isn't Already Where It Should Be,
+            // Otherwise It Would Be Moved 100 Times Per Second For No Reason
+            var alreadyInPosition = IsWindowVisible(hwnd)
+                && Math.Abs(NotifyRect.X - targetX) <= PositionTolerance
+                && Math.Abs(NotifyRect.Y - targetY) <= PositionTolerance;
+
+            if (!alreadyInPosition)
+            {
+                SetWindowPos(hwnd, 0, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
             }
 
         }

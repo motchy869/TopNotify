@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using TopNotify.Common;
 using Windows.UI.Notifications;
@@ -25,8 +26,17 @@ namespace TopNotify.Daemon
 
         public Settings CurrentSettings;
 
-        public int TimeSinceReflow = 0;
-        public const int ReflowTimeout = 50;
+        /// <summary>Update interval (in milliseconds) used while a notification window is being tracked</summary>
+        public const int ActiveUpdateInterval = 10;
+
+        /// <summary>Update interval (in milliseconds) used while nothing is being tracked (CPU back-off)</summary>
+        public const int IdleUpdateInterval = 250;
+
+        /// <summary>How often (in milliseconds) windows, monitors and configs are rediscovered</summary>
+        public const int ReflowInterval = 500;
+
+        // Wakes The Main Loop Up Early Whenever Something Happened
+        readonly ManualResetEventSlim updateSignal = new ManualResetEventSlim(false);
 
         public ConcurrentDictionary<uint, Action?> CleanUpFunctions = new ConcurrentDictionary<uint, Action?>(); // Maps HandledNotifications to the associated clean up function
         public UserNotificationListener Listener;
@@ -93,21 +103,52 @@ namespace TopNotify.Daemon
             MainLoop();
         }
 
+        /// <summary>
+        /// True While At Least One Interceptor Needs To Be Updated At A High Frequency
+        /// </summary>
+        public bool NeedsFrequentUpdate
+        {
+            get
+            {
+                foreach (Interceptor i in Interceptors)
+                {
+                    if (i.NeedsFrequentUpdate) { return true; }
+                }
+
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Wakes The Main Loop Up, So Changes Are Applied Without Waiting For The Idle Interval
+        /// </summary>
+        public void RequestImmediateUpdate()
+        {
+            updateSignal.Set();
+        }
+
         public void MainLoop()
         {
+            var reflowTimer = Stopwatch.StartNew();
+
             while (true)
             {
-                TimeSinceReflow++;
-
-                if (TimeSinceReflow > ReflowTimeout)
+                if (reflowTimer.ElapsedMilliseconds >= ReflowInterval)
                 {
-                    TimeSinceReflow = 0;
+                    reflowTimer.Restart();
                     Reflow();
                 }
 
                 Update();
 
-                Thread.Sleep(10);
+                // Poll At Full Speed While A Notification Window Is Visible,
+                // Otherwise Back Off So The Daemon Doesn't Burn CPU While Idle
+                var updateInterval = NeedsFrequentUpdate ? ActiveUpdateInterval : IdleUpdateInterval;
+
+                if (updateSignal.Wait(updateInterval))
+                {
+                    updateSignal.Reset();
+                }
             }
         }
 
@@ -172,12 +213,15 @@ namespace TopNotify.Daemon
                 }
             }
 
-            Update();
+            RequestImmediateUpdate();
         }
 
         public void OnSettingsChanged()
         {
             CurrentSettings = Settings.Get();
+
+            // The Preferred Monitor May Have Changed, So Cached Monitor Data Must Be Thrown Away
+            ResolutionFinder.InvalidateCache();
 
             foreach (Interceptor i in Interceptors)
             {
@@ -188,6 +232,8 @@ namespace TopNotify.Daemon
                 }
                 catch (Exception ex) { }
             }
+
+            RequestImmediateUpdate();
         }
     }
 }

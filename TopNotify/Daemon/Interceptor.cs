@@ -29,6 +29,15 @@ namespace TopNotify.Daemon
         }
 
         /// <summary>
+        /// True While This Interceptor Needs To Be Updated At A High Frequency
+        /// Used To Back Off The Main Loop While Nothing Is Happening
+        /// </summary>
+        public virtual bool NeedsFrequentUpdate
+        {
+            get { return false; }
+        }
+
+        /// <summary>
         /// Called When A Notification Pops Up
         /// </summary>
         public virtual void OnNotification(UserNotification notification)
