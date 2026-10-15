@@ -91,16 +91,24 @@ extern "C" {
 		HWND  lv_hDeskWnd;
 		HWND* lv_List;
 
-		NtUserBuildHwndList pNtUserBuildHwndList = NULL;
-		HMODULE hpath;
-		hpath = LoadLibrary(L"win32u.dll");
-		pNtUserBuildHwndList = NtUserBuildHwndList(GetProcAddress(hpath, "NtUserBuildHwndList"));
+		// Resolved Only Once, Since This Function Is Called Several Times Per Second
+		static NtUserBuildHwndList pNtUserBuildHwndList = NULL;
+
+		if (pNtUserBuildHwndList == NULL)
+		{
+			HMODULE hpath = LoadLibraryW(L"win32u.dll");
+
+			if (hpath != NULL)
+			{
+				pNtUserBuildHwndList = (NtUserBuildHwndList)GetProcAddress(hpath, "NtUserBuildHwndList");
+			}
+		}
 
 		// no error yet
 		lv_Result = TRUE;
 
 		// first try api to get full window list including immersive/metro apps
-		lv_List = _Gui_BuildWindowList(pNtUserBuildHwndList, 0, 0, 0, 0, 0, &lv_Cnt);
+		lv_List = (pNtUserBuildHwndList != NULL) ? _Gui_BuildWindowList(pNtUserBuildHwndList, 0, 0, 0, 0, 0, &lv_Cnt) : NULL;
 
 		// success?
 		if (lv_List)

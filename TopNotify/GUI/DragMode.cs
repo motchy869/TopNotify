@@ -141,22 +141,29 @@ namespace TopNotify.GUI
         public static void DragModeThread()
         {
             Point cursorPos;
+            Point lastCursorPos = new Point(int.MinValue, int.MinValue);
             IntPtr dragModeHandle = DragModeWindow.NativeHandle;
 
             while (DragModeWindow != null)
             {
-                //Set The Drag Mode Window To Be At The Cursor's Position
                 GetCursorPos(out cursorPos);
 
-                //Add Offset To Keep Cursor Inside The Window
-                //This Prevents The Cursor From Flashing In And Out Due To Being On The Edge Of The Window
-                cursorPos.X -= 30;
-                cursorPos.Y -= 30;
+                //Only Touch The Window/UI When The Cursor Actually Moved
+                //(This Used To Sleep(0) And Re-Set The Same Position, Burning A Whole CPU Core)
+                if (cursorPos != lastCursorPos)
+                {
+                    lastCursorPos = cursorPos;
 
-                SetWindowPos(dragModeHandle, 0, cursorPos.X, cursorPos.Y, 0, 0, 0x0001);
-                DragModeWindow?.CallFunction("window.updateCoordinates", cursorPos.X, cursorPos.Y);
+                    //Add Offset To Keep Cursor Inside The Window
+                    //This Prevents The Cursor From Flashing In And Out Due To Being On The Edge Of The Window
+                    var windowX = cursorPos.X - 30;
+                    var windowY = cursorPos.Y - 30;
 
-                Thread.Sleep(0);
+                    SetWindowPos(dragModeHandle, 0, windowX, windowY, 0, 0, 0x0001);
+                    DragModeWindow?.CallFunction("window.updateCoordinates", windowX, windowY);
+                }
+
+                Thread.Sleep(16);
             }
         }
     }

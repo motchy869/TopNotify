@@ -82,12 +82,38 @@ namespace TopNotify.Daemon
         const int PositionTolerance = 2;
 
         /// <summary>
+        /// How Often (In Milliseconds) The Expensive Fallback Detection May Run While Nothing Is Being Tracked.
+        /// New Notifications Force A Reflow, So This Doesn't Delay The Notification From Being Moved.
+        /// </summary>
+        const int FallbackDetectionInterval = 2000;
+
+        // Log Gates, So An Idle Daemon Doesn't Write The Same Message To The Log Twice A Second
+        bool hasLoggedForcedFallback = false;
+        bool hasLoggedFallbackDetection = false;
+        bool hasLoggedMissingWindow = false;
+
+        DateTime lastFallbackDetection = DateTime.MinValue;
+
+        /// <summary>
         /// Only Poll Fast While A Notification Window Is Actually Visible,
         /// So The Main Loop Can Back Off While Nothing Is Happening
         /// </summary>
         public override bool NeedsFrequentUpdate
         {
             get { return hwnd != IntPtr.Zero && IsWindow(hwnd) && IsWindowVisible(hwnd); }
+        }
+
+        /// <summary>
+        /// The Fallback Detection Has To Enumerate Every Top Level Window, So It Is Skipped While Idle
+        /// </summary>
+        bool ShouldRunFallbackDetection()
+        {
+            if (hwnd != IntPtr.Zero) { return true; } // A Window Is Tracked, Keep Its Handle Fresh
+
+            // A Notification Just Arrived, So It Is Worth Looking For Its Window Right Away
+            if (InterceptorManager.Instance != null && InterceptorManager.Instance.IsForcedReflow) { return true; }
+
+            return (DateTime.UtcNow - lastFallbackDetection).TotalMilliseconds >= FallbackDetectionInterval;
         }
 
         public override void Start()
@@ -108,9 +134,13 @@ namespace TopNotify.Daemon
             IntPtr found = IntPtr.Zero;
             List<IntPtr> windows = new List<IntPtr>();
 
+            // Reused For Every Window, Because This Enumerates The Whole Desktop
+            // (Class Names Can't Be Longer Than 256 Characters)
+            var classGet = new StringBuilder(256);
+
             TopNotifyEnumWindows(delegate (IntPtr hwnd, IntPtr param)
             {
-                var classGet = new StringBuilder(1024);
+                classGet.Clear();
                 GetClassName(hwnd, classGet, classGet.Capacity);
                 if (classGet.ToString() == "Windows.UI.Core.CoreWindow")
                 {
@@ -142,7 +172,12 @@ namespace TopNotify.Daemon
 
                 if (Settings.EnableDebugForceFallbackMode)
                 {
-                    Program.Logger.Information($"Fallback detection is being forced");
+                    if (!hasLoggedForcedFallback)
+                    {
+                        Program.Logger.Information($"Fallback detection is being forced");
+                        hasLoggedForcedFallback = true;
+                    }
+
                     foundHwnd = IntPtr.Zero; // Always use fallback mode if this setting is enabled
                 }
 
@@ -153,9 +188,16 @@ namespace TopNotify.Daemon
                 ScaleFactor = ResolutionFinder.GetInverseScale();
 
                 //The Notification Isn't In A Supported Language
-                if (foundHwnd == IntPtr.Zero)
+                if (foundHwnd == IntPtr.Zero && ShouldRunFallbackDetection())
                 {
-                    Program.Logger.Information($"Couldn't use language-specific window detection, using fallback detection");
+                    if (!hasLoggedFallbackDetection)
+                    {
+                        Program.Logger.Information($"Couldn't use language-specific window detection, using fallback detection");
+                        hasLoggedFallbackDetection = true;
+                    }
+
+                    lastFallbackDetection = DateTime.UtcNow;
+
                     //The Notification Window Is The Only One That Is 396 x 152
                     foreach (var win in FindCoreWindows())
                     {
@@ -169,17 +211,26 @@ namespace TopNotify.Daemon
                     }
                 }
 
-                if (foundHwnd != IntPtr.Zero && hwnd != foundHwnd)
+                if (foundHwnd != IntPtr.Zero)
                 {
-                    Program.Logger.Information($"Found notification window {foundHwnd}");
-                    hwnd = foundHwnd;
+                    // Report These Again The Next Time Something Goes Wrong
+                    hasLoggedFallbackDetection = false;
+                    hasLoggedMissingWindow = false;
+
+                    if (hwnd != foundHwnd)
+                    {
+                        Program.Logger.Information($"Found notification window {foundHwnd}");
+                        hwnd = foundHwnd;
+                    }
 
                     // Apply The Position/Opacity Right Away Instead Of Waiting For The Next Tick
                     InterceptorManager.Instance?.RequestImmediateUpdate();
                 }
-                else if (foundHwnd == IntPtr.Zero)
+                else if (!hasLoggedMissingWindow)
                 {
-                    Program.Logger.Error($"Couldn't find the handle of the notification window");
+                    // Only Logged Once, So An Idle Daemon Doesn't Spam The Log File
+                    Program.Logger.Information($"Couldn't find the handle of the notification window");
+                    hasLoggedMissingWindow = true;
                 }
 
                 Update();

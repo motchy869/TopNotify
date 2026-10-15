@@ -103,7 +103,11 @@ namespace TopNotify.Common
             {
                 // Initialize Logging For GUI
                 Logger = new LoggerConfiguration()
-                    .WriteTo.File(Path.Join(Settings.GetAppDataFolder(), "gui.log"), rollingInterval: RollingInterval.Infinite)
+                    .WriteTo.File(Path.Join(Settings.GetAppDataFolder(), "gui.log"),
+                        rollingInterval: RollingInterval.Infinite,
+                        fileSizeLimitBytes: 10 * 1024 * 1024,
+                        rollOnFileSizeLimit: true,
+                        retainedFileCountLimit: 5)
                     .CreateLogger();
                 Logging.WriteWatermark("GUI");
 
@@ -115,7 +119,11 @@ namespace TopNotify.Common
             {
                 // Initialize Logging For Daemon
                 Logger = new LoggerConfiguration()
-                    .WriteTo.File(Path.Join(Settings.GetAppDataFolder(), "daemon.log"), rollingInterval: RollingInterval.Infinite)
+                    .WriteTo.File(Path.Join(Settings.GetAppDataFolder(), "daemon.log"),
+                        rollingInterval: RollingInterval.Infinite,
+                        fileSizeLimitBytes: 10 * 1024 * 1024,
+                        rollOnFileSizeLimit: true,
+                        retainedFileCountLimit: 5)
                     .CreateLogger();
                 Logging.WriteWatermark("daemon");
 

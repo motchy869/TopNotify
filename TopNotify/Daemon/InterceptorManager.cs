@@ -38,6 +38,15 @@ namespace TopNotify.Daemon
         // Wakes The Main Loop Up Early Whenever Something Happened
         readonly ManualResetEventSlim updateSignal = new ManualResetEventSlim(false);
 
+        // Set When A Reflow Should Run Before The Next Scheduled One
+        volatile bool reflowRequested = false;
+
+        /// <summary>
+        /// True While A Reflow Was Requested Outside Of The Normal Schedule
+        /// (Interceptors Can Use This To Allow Expensive Detection)
+        /// </summary>
+        public bool IsForcedReflow { get; private set; }
+
         public ConcurrentDictionary<uint, Action?> CleanUpFunctions = new ConcurrentDictionary<uint, Action?>(); // Maps HandledNotifications to the associated clean up function
         public UserNotificationListener Listener;
         public bool CanListenToNotifications = false;
@@ -127,16 +136,29 @@ namespace TopNotify.Daemon
             updateSignal.Set();
         }
 
+        /// <summary>
+        /// Wakes The Main Loop Up And Runs A Reflow Before The Next Scheduled One
+        /// (Used When A Notification Arrives, So Its Window Is Detected Right Away)
+        /// </summary>
+        public void RequestImmediateReflow()
+        {
+            reflowRequested = true;
+            updateSignal.Set();
+        }
+
         public void MainLoop()
         {
             var reflowTimer = Stopwatch.StartNew();
 
             while (true)
             {
-                if (reflowTimer.ElapsedMilliseconds >= ReflowInterval)
+                if (reflowRequested || reflowTimer.ElapsedMilliseconds >= ReflowInterval)
                 {
+                    var wasRequested = reflowRequested;
+                    reflowRequested = false;
+
                     reflowTimer.Restart();
-                    Reflow();
+                    Reflow(wasRequested);
                 }
 
                 Update();
@@ -154,13 +176,31 @@ namespace TopNotify.Daemon
 
         public void Reflow()
         {
-            foreach (Interceptor i in Interceptors)
+            Reflow(false);
+        }
+
+        /// <summary>
+        /// Runs A Reflow On Every Interceptor
+        /// </summary>
+        /// <param name="forced">True When A Notification Arrived, So Expensive Detection Is Worth Running Right Away</param>
+        public void Reflow(bool forced)
+        {
+            IsForcedReflow = forced;
+
+            try
             {
-                try
+                foreach (Interceptor i in Interceptors)
                 {
-                    i.Reflow();
+                    try
+                    {
+                        i.Reflow();
+                    }
+                    catch (Exception ex) { }
                 }
-                catch (Exception ex) { }
+            }
+            finally
+            {
+                IsForcedReflow = false;
             }
         }
 
@@ -213,7 +253,8 @@ namespace TopNotify.Daemon
                 }
             }
 
-            RequestImmediateUpdate();
+            // Detect The Notification Window Right Away, Instead Of Waiting For The Next Scheduled Reflow
+            RequestImmediateReflow();
         }
 
         public void OnSettingsChanged()
