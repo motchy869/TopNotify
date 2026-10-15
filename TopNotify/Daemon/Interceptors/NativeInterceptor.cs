@@ -95,12 +95,22 @@ namespace TopNotify.Daemon
         DateTime lastFallbackDetection = DateTime.MinValue;
 
         /// <summary>
-        /// Only Poll Fast While A Notification Window Is Actually Visible,
-        /// So The Main Loop Can Back Off While Nothing Is Happening
+        /// Only Poll Fast While A Notification Is Actually On Screen, So The Main Loop Can Back Off
+        /// Otherwise. Windows Keeps A Visible But Collapsed (Zero Height) Notification Window Around,
+        /// Which Would Keep The Daemon At Full Speed Forever.
         /// </summary>
         public override bool NeedsFrequentUpdate
         {
-            get { return hwnd != IntPtr.Zero && IsWindow(hwnd) && IsWindowVisible(hwnd); }
+            get
+            {
+                if (hwnd == IntPtr.Zero || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) { return false; }
+
+                // The Window Only Has A Real Height While A Toast Is Showing
+                Rectangle rect = new Rectangle();
+                if (!GetWindowRect(hwnd, ref rect)) { return false; }
+
+                return (rect.Height - rect.Y) > 0;
+            }
         }
 
         /// <summary>
